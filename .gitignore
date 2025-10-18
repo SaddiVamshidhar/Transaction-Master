@@ -1,0 +1,53 @@
+# --- Bytecode and cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.env
+
+# --- Secrets ---
+# Keep your actual environment variables out of Git!
+# .env.example IS checked in as a template.
+.env
+
+# --- Poetry ---
+# Lock file should usually be committed, but ignore build/dist artifacts
+dist/
+build/
+.poetry/
+
+# --- Databases ---
+# Ignore local database files (if you weren't using Docker)
+*.db
+*.sqlite3
+
+# --- Docker ---
+# Ignore Docker Compose override files, potentially containing local paths/secrets
+docker-compose.override.yml
+docker-compose.*.yml
+
+# --- IDE / Editor Files ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Operating System Files ---
+.DS_Store
+Thumbs.db
+
+# --- Test Artifacts ---
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# --- Logs ---
+*.log
+logs/

@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: zookeeper
+    networks:
+      - transaction-net
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: kafka
+    networks:
+      - transaction-net
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:29092,PLAINTEXT_EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka:29092,PLAINTEXT_EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    networks:
+      - transaction-net
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: transactions_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  transaction_service:
+    build:
+      context: ./services/transaction_service
+      dockerfile: Dockerfile
+    container_name: transaction_service
+    networks:
+      - transaction-net
+    depends_on:
+      - kafka
+      - postgres
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    command: >
+      sh -c "
+        python scripts/wait_for_service.py postgres 5432 &&
+        python scripts/wait_for_service.py kafka 29092 &&
+        
+        echo 'Services are ready. Running migrations...' &&
+        poetry run alembic upgrade head &&
+        
+        echo 'Creating topics...' &&
+        poetry run python /app/scripts/create_topics.py &&
+        
+        echo 'Starting web server...' &&
+        poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+
+networks:
+  transaction-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
