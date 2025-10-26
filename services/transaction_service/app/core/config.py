@@ -12,6 +12,8 @@ class Settings(BaseSettings):
 
     # Database settings
     DB_URL: str = "postgresql+asyncpg://user:password@localhost:5432/transactions_db"
+    
+    SECURITY_MASTER_URL: str
 
     # App settings
     LOG_LEVEL: str = "INFO"
