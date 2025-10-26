@@ -1,90 +1,122 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
-from typing import Optional
+from typing import Optional, List # Import List
 
 # --- Core Domain Models ---
+# (TradeSide, TradeType, EventType, RawTrade remain unchanged from last update)
 
 class TradeSide(str, Enum):
     BUY = "Buy"
     SELL = "Sell"
 
+class TradeType(str, Enum):
+    EQUITY = "EQ"
+    FUTURES = "FUT"
+    OPTIONS_CALL = "CE"
+    OPTIONS_PUT = "PE"
+    CURRENCY = "CUR"
+    COMMODITY = "COM"
+
+class EventType(str, Enum):
+    DIVIDEND = "DIVIDEND"
+    SPLIT = "SPLIT"
+    BONUS = "BONUS"
+    RIGHTS = "RIGHTS"
+    MERGER = "MERGER"
+
 class RawTrade(BaseModel):
-    """Our internal, standardized representation of a raw trade, used for Kafka messages."""
     external_id: str
     client_id: str
-    instrument_token: str
-    side: TradeSide
-    price: float
-    quantity: float
+    instrument_token: Optional[str] = None
+    side: Optional[TradeSide] = None
+    price: Optional[float] = None
+    quantity: Optional[float] = None
     timestamp: datetime
     executing_broker: str
     version: Optional[str] = None
     source: Optional[str] = None
-
+    exchange: Optional[str] = None
+    trade_type: Optional[TradeType] = None
+    event_type: Optional[EventType] = None
 
 # --- External API Models ---
 
 class FyersTradeWebhook(BaseModel):
-    """Pydantic model to validate the incoming webhook payload from Fyers."""
-    # Use Field(alias=...) to map Fyers's JSON field names (like 'id') to our preferred Python attribute names.
-    id: str = Field(..., alias='id')
-    client_id: str = Field(..., alias='clientId')
-    symbol: str = Field(..., alias='symbol')
-    side: int  # Fyers sends a number (-1 for sell, 1 for buy)
-    traded_price: float = Field(..., alias='tradedPrice')
-    filled_qty: int = Field(..., alias='filledQty')
-    order_date_time: str = Field(..., alias='orderDateTime')
-    
-    # This tells Pydantic to ignore any extra fields Fyers might send that we don't use.
+    id: str
+    clientId: str
+    symbol: str
+    side: int
+    tradedPrice: float
+    filledQty: int
+    orderDateTime: str
     model_config = ConfigDict(extra='ignore')
 
 
 # --- Database & Messaging Models ---
+# (DBTransactionCreate, EnrichedTrade, DLEnvelope remain unchanged from last update)
 
 class DBTransactionCreate(BaseModel):
-    """Schema for creating a new record in the database."""
     external_id: str
     client_id: str
-    security_id: Optional[int]
-    side: TradeSide
-    price: float
-    quantity: float
+    security_id: int
+    side: Optional[TradeSide] = None
+    price: Optional[float] = None
+    quantity: Optional[float] = None
     timestamp: datetime
     executing_broker: str
     version: Optional[bytes] = None
     source: Optional[str] = None
+    exchange: Optional[str] = None
+    trade_type: Optional[TradeType] = None
+    event_type: Optional[EventType] = None
 
 class EnrichedTrade(BaseModel):
-    """Schema for the outgoing message to the 'enriched' topic and the query API response."""
     transaction_id: int
     external_id: str
     client_id: str
-    security_id: Optional[int]
-    side: TradeSide
-    price: float
-    quantity: float
+    security_id: int
+    side: Optional[TradeSide] = None
+    price: Optional[float] = None
+    quantity: Optional[float] = None
     timestamp: datetime
     executing_broker: str
     source: Optional[str] = None
     version: Optional[str] = None
     created_at: datetime
+    exchange: Optional[str] = None
+    trade_type: Optional[TradeType] = None
+    event_type: Optional[EventType] = None
 
 class DLEnvelope(BaseModel):
-    """Schema for messages sent to the Dead-Letter Queue."""
     error_message: str
     error_service: str = "transaction_master_service"
     failed_at: datetime
-    original_payload: RawTrade # Note: In a real system, you might want this to hold the raw Fyers payload.
+    original_payload: RawTrade # Consider if this should hold Fyers payload on Fyers failure
 
 
-# --- Security Master Client Models ---
+# --- Security Master Client Models (REVISED) ---
 
-class SecurityMasterData(BaseModel):
-    id: int
-    nse_symbol: Optional[str] = None
-    company_name: str
+class SecurityMasterDetail(BaseModel):
+    """Represents the object inside the 'data' list."""
+    id: int # This is the crucial security_id
+    company_name: Optional[str] = None
+    isin: Optional[str] = None
+    market_code1: Optional[str] = None
+    symbol1: Optional[str] = None
+    # Add any other fields you might need from the response later
+    # Be careful with types, some numbers are strings
+    face_value: Optional[str] = None
+    outstanding_shares: Optional[str] = None
+
+    # Allow extra fields we don't explicitly define
+    model_config = ConfigDict(extra='ignore')
 
 class SecurityMasterResponse(BaseModel):
-    success: bool
-    data: Optional[SecurityMasterData] = None
+    """Represents the overall structure of the Security Master API response."""
+    count: int
+    data: List[SecurityMasterDetail] # It's a list containing detail objects
+    status: str # Expecting "success" or potentially an error status
+
+    # Allow extra fields we don't explicitly define
+    model_config = ConfigDict(extra='ignore')
