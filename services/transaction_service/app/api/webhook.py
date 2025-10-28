@@ -4,44 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.schemas import RawTrade, FyersTradeWebhook, TradeSide, TradeType
 from app.kafka.producer import KafkaProducer, get_kafka_producer
 from app.core.config import settings
+from app.utils.parsers import parse_fyers_symbol  # <--- IMPORTED FROM NEW LOCATION
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-def parse_fyers_symbol(symbol: str) -> tuple[str, TradeType | None]:
-    """
-    Parses a Fyers symbol string (e.g., 'NSE:SBIN-EQ', 'NSE:NIFTY25DECFUT')
-    into exchange and trade type.
-    Returns (exchange, trade_type) or (exchange, None) if type is unknown.
-    """
-    try:
-        parts = symbol.split(':')
-        if len(parts) != 2:
-            logger.warning(f"Could not parse exchange from symbol: {symbol}")
-            return "UNKNOWN", None # Or raise an error if exchange is mandatory
-
-        exchange = parts[0]
-        identifier = parts[1]
-
-        # Determine trade type based on common Fyers suffixes
-        if identifier.endswith("-EQ"):
-            trade_type = TradeType.EQUITY
-        elif identifier.endswith("FUT"):
-            trade_type = TradeType.FUTURES
-        elif identifier.endswith("CE"):
-            trade_type = TradeType.OPTIONS_CALL
-        elif identifier.endswith("PE"):
-            trade_type = TradeType.OPTIONS_PUT
-        # Add more specific checks if needed for CUR, COM etc.
-        # This might require more examples of Fyers symbols for those types.
-        else:
-            logger.warning(f"Could not determine trade type from symbol identifier: {identifier}")
-            trade_type = None # Mark as unknown if suffix doesn't match
-
-        return exchange, trade_type
-    except Exception as e:
-        logger.error(f"Error parsing symbol '{symbol}': {e}", exc_info=True)
-        return "ERROR", None
+# --- The parse_fyers_symbol function has been REMOVED from this file ---
+# ... (it is now in app/utils/parsers.py) ...
 
 
 @router.post("/trade", status_code=status.HTTP_202_ACCEPTED)
@@ -77,9 +46,9 @@ async def accept_trade(
             timestamp=trade_timestamp,
             executing_broker="Fyers",
             source="fyers_webhook",
-            exchange=exchange,          # Populate parsed exchange
-            trade_type=trade_type,      # Populate parsed trade type
-            event_type=None             # Fyers webhook sends trades, not events
+            exchange=exchange,       # Populate parsed exchange
+            trade_type=trade_type,   # Populate parsed trade type
+            event_type=None          # Fyers webhook sends trades, not events
         )
 
         logger.info(f"Received and transformed Fyers trade with external_id: {internal_trade.external_id}")
