@@ -1,0 +1,1840 @@
+--- Folder: . ---
+--- File: .env.example ---
+# Kafka Configuration
+KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+KAFKA_INCOMING_TOPIC=transactions.incoming
+KAFKA_ENRICHED_TOPIC=transactions.enriched
+KAFKA_DLQ_TOPIC=transactions.dlq
+KAFKA_CONSUMER_GROUP=transaction_service_group
+
+# Database Configuration
+# Format: postgresql+asyncpg://<user>:<password>@<host>:<port>/<db_name>
+DB_URL=postgresql+asyncpg://user:password@postgres:5432/transactions_db
+
+# Application Configuration
+LOG_LEVEL=INFO
+PROCESSOR_MAX_RETRIES=3
+
+#security master API
+SECURITY_MASTER_URL=https://your-real-security-master-api.com/api/v1
+
+--- File: .gitignore ---
+# --- Bytecode and cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.env
+
+# --- Secrets ---
+# Keep your actual environment variables out of Git!
+# .env.example IS checked in as a template.
+.env
+
+# --- Poetry ---
+# Lock file should usually be committed, but ignore build/dist artifacts
+dist/
+build/
+.poetry/
+
+# --- Databases ---
+# Ignore local database files (if you weren't using Docker)
+*.db
+*.sqlite3
+
+# --- Docker ---
+# Ignore Docker Compose override files, potentially containing local paths/secrets
+docker-compose.override.yml
+docker-compose.*.yml
+
+# --- IDE / Editor Files ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Operating System Files ---
+.DS_Store
+Thumbs.db
+
+# --- Test Artifacts ---
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# --- Logs ---
+*.log
+logs/
+
+--- File: check.py ---
+import os
+
+def collect_files_and_folders(root_dir, output_file="output.txt"):
+    """
+    Collects all files and folders in a given directory (excluding .git),
+    appends file content with folder names, and saves to a text file.
+
+    Args:
+        root_dir (str): The path to the root directory to scan.
+        output_file (str): The name of the output text file.
+    """
+    with open(output_file, 'w', encoding='utf-8') as outfile:
+        for dirpath, dirnames, filenames in os.walk(root_dir):
+            # Exclude .git directory from traversal
+            if '.git' in dirnames:
+                dirnames.remove('.git')
+
+            # Write folder name to output file
+            outfile.write(f"--- Folder: {os.path.relpath(dirpath, root_dir)} ---\n")
+
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as infile:
+                        content = infile.read()
+                    outfile.write(f"--- File: {os.path.relpath(filepath, root_dir)} ---\n")
+                    outfile.write(content)
+                    outfile.write("\n\n")  # Add some separation between files
+                except Exception as e:
+                    outfile.write(f"--- Could not read file: {os.path.relpath(filepath, root_dir)} - Error: {e} ---\n\n")
+
+# Example usage:
+if __name__ == "__main__":
+    target_directory = "D:\Transaction-Master"  # Replace with the actual directory path
+    collect_files_and_folders(target_directory, "collected_code.txt")
+    print(f"All files and folders (excluding .git) have been collected into 'collected_code.txt'")
+
+--- File: collected_code.txt ---
+
+
+--- File: docker-compose.yml ---
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: zookeeper
+    networks:
+      - transaction-net
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: kafka
+    networks:
+      - transaction-net
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:29092,PLAINTEXT_EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka:29092,PLAINTEXT_EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    networks:
+      - transaction-net
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: transactions_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  transaction_service:
+    build:
+      context: ./services/transaction_service
+      dockerfile: Dockerfile
+    container_name: transaction_service
+    networks:
+      - transaction-net
+    depends_on:
+      - kafka
+      - postgres
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    command: >
+      sh -c "
+        python scripts/wait_for_service.py postgres 5432 &&
+        python scripts/wait_for_service.py kafka 29092 &&
+        
+        echo 'Services are ready. Running migrations...' &&
+        poetry run alembic upgrade head &&
+        
+        echo 'Creating topics...' &&
+        poetry run python /app/scripts/create_topics.py &&
+        
+        echo 'Starting web server...' &&
+        poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+
+networks:
+  transaction-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+
+--- File: README.md ---
+# Transaction Master Service
+
+This is a production-founded prototype of a microservice responsible for processing algorithmic trading transactions. It ingests raw trade data via a webhook, enriches it, persists it idempotently to a PostgreSQL database, and publishes the enriched data to a Kafka topic for downstream consumers.
+
+## Features
+
+- **FastAPI**: High-performance asynchronous web framework.
+- **Kafka Integration**: Asynchronous messaging with `aiokafka` for robust data pipelines.
+- **PostgreSQL Backend**: Reliable and transactional data storage using `SQLAlchemy` (async) and `asyncpg`.
+- **Idempotent Processing**: Ensures that duplicate messages are handled gracefully without creating duplicate records.
+- **Observability**: Structured JSON logging, Prometheus metrics (`/metrics`), and health checks (`/health`).
+- **Containerized**: Fully containerized with Docker and Docker Compose for easy local development and deployment.
+- **Migrations**: Database schema migrations managed by `Alembic`.
+- **Testing**: Comprehensive unit tests with `pytest`.
+
+## Getting Started
+
+### Prerequisites
+
+- Docker
+- Docker Compose
+
+### 1. Setup Environment
+
+First, copy the example environment file. The default values are configured to work with the provided `docker-compose.yml`.
+
+```bash
+cp .env.example .env
+
+--- Folder: services ---
+--- Folder: services\transaction_service ---
+--- File: services\transaction_service\.env ---
+# Kafka Configuration
+KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+KAFKA_INCOMING_TOPIC=transactions.incoming
+KAFKA_ENRICHED_TOPIC=transactions.enriched
+KAFKA_DLQ_TOPIC=transactions.dlq
+KAFKA_CONSUMER_GROUP=transaction_service_group
+
+# Database Configuration
+# Format: postgresql+asyncpg://<user>:<password>@<host>:<port>/<db_name>
+DB_URL=postgresql+asyncpg://user:password@postgres:5432/transactions_db
+
+# Application Configuration
+LOG_LEVEL=INFO
+PROCESSOR_MAX_RETRIES=3
+
+# Security Master API
+# Use the Docker service name if it's on the same network
+SECURITY_MASTER_API_URL=
+SECURITY_MASTER_API_KEY=your_secret_api_key_goes_here
+
+--- File: services\transaction_service\alembic.ini ---
+[alembic]
+# path to migration scripts
+script_location = app/db/alembic
+
+# Semicolon-separated list of supported template directories
+# template_paths =
+
+# An ini-style file is used for configuration.
+# The default is alembic.ini, which is read from the current directory.
+# A path may also be given, e.g. myapp:alembic.ini, where the path
+# is interpreted by PasteDeploy.
+# sqlalchemy.url defines the database connection.  The format is
+# driver://user:pass@host/dbname.
+# sqlalchemy.url = driver://user:pass@host/dbname
+sqlalchemy.url = postgresql+asyncpg://user:password@postgres:5432/transactions_db
+
+# Logging configuration
+[loggers]
+keys = root,sqlalchemy,alembic
+
+[handlers]
+keys = console
+
+[formatters]
+keys = generic
+
+[logger_root]
+level = WARN
+handlers = console
+qualname =
+
+[logger_sqlalchemy]
+level = WARN
+handlers =
+qualname = sqlalchemy.engine
+
+[logger_alembic]
+level = INFO
+handlers =
+qualname = alembic
+
+[handler_console]
+class = StreamHandler
+args = (sys.stderr,)
+level = NOTSET
+formatter = generic
+
+[formatter_generic]
+format = %(levelname)-5.5s [%(name)s] %(message)s
+datefmt = %H:%M:%S
+
+--- File: services\transaction_service\Dockerfile ---
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install netcat for health checks
+RUN apt-get update && apt-get install -y netcat-openbsd && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+ENV POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_IN_PROJECT=1 \
+    POETRY_VIRTUALENVS_CREATE=1
+ENV PYTHONPATH=/app
+
+# Install poetry
+RUN pip install poetry
+
+# Copy only requirements to leverage Docker cache
+COPY pyproject.toml ./
+
+# Install dependencies
+RUN poetry install --no-root --only main
+
+# Copy the rest of the application
+COPY . .
+
+# Copy scripts to a location accessible in the container
+COPY scripts /app/scripts
+RUN chmod +x /app/scripts/*.sh
+
+# Expose the port the app runs on
+EXPOSE 8000
+
+# The command from docker-compose.yml will override this,
+# but it's good practice to have a default command.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+--- File: services\transaction_service\pyproject.toml ---
+[tool.poetry]
+name = "transaction-service"
+version = "0.1.0"
+description = "Transaction Master Service for an algorithmic trading platform."
+authors = ["Gemini AI"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.103.2"
+uvicorn = {extras = ["standard"], version = "^0.23.2"}
+pydantic = {extras = ["email"], version = "^2.4.2"}
+pydantic-settings = "^2.0.3"
+sqlalchemy = {extras = ["asyncio"], version = "^2.0.21"}
+asyncpg = "^0.28.0"
+psycopg2-binary = "^2.9.9"
+alembic = "^1.12.0"
+aiokafka = "^0.8.0"
+kafka-python = "2.0.2"  # <-- ADD THIS LINE
+prometheus-fastapi-instrumentator = "^6.1.0"
+python-json-logger = "^2.0.7"
+tenacity = "^8.2.3"
+httpx = "^0.25.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.2"
+pytest-asyncio = "^0.21.1"
+faker = "^19.12.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+pythonpath = "."
+asyncio_mode = "auto"
+
+--- Folder: services\transaction_service\app ---
+--- File: services\transaction_service\app\main.py ---
+import logging
+from contextlib import asynccontextmanager
+from sqlalchemy import text 
+
+from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from aiokafka.errors import KafkaConnectionError
+from prometheus_fastapi_instrumentator import Instrumentator
+
+# NOTE: These imports will cause errors if you run the app now,
+# because we haven't created these files yet. We will create them next.
+from app.api import webhook
+from app.core.config import settings
+from app.db.session import get_db_session, engine
+from app.kafka.producer import kafka_producer
+from app.services.processor import transaction_processor
+from app.utils.logging import setup_logging
+from app.api import query as query_api
+
+# Setup logging first
+setup_logging()
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting up service...")
+    await kafka_producer.start()
+    await transaction_processor.start()
+    yield
+    # Shutdown
+    logger.info("Shutting down service...")
+    await transaction_processor.stop()
+    await kafka_producer.stop()
+    await engine.dispose()
+    logger.info("Shutdown complete.")
+
+app = FastAPI(
+    title="Transaction Master Service",
+    description="Service for processing and mastering trade transactions.",
+    version="0.1.0",
+    lifespan=lifespan
+)
+
+# Instrument for Prometheus metrics
+Instrumentator().instrument(app).expose(app)
+
+app.include_router(webhook.router, prefix="/webhook", tags=["Webhook"])
+app.include_router(query_api.router, prefix="/query", tags=["Query"])
+
+@app.get("/health", tags=["Health"])
+async def health_check(session: AsyncSession = Depends(get_db_session)):
+    """
+    Performs a health check on the service and its dependencies (DB, Kafka).
+    """
+    # Check DB connection
+    try:
+        # A simple query to check DB connectivity
+        await session.execute(text("SELECT 1"))
+        db_status = "ok"
+    except Exception as e:
+        logger.error(f"Health check failed: DB connection error - {e}")
+        raise HTTPException(status_code=503, detail={"database": "error"})
+
+    # Check Kafka producer connection
+    try:
+        # aiokafka doesn't have a simple "ping", but sending metadata request is a good check
+        await kafka_producer.producer.partitions_for(settings.KAFKA_INCOMING_TOPIC)
+        kafka_status = "ok"
+    except KafkaConnectionError as e:
+        logger.error(f"Health check failed: Kafka connection error - {e}")
+        raise HTTPException(status_code=503, detail={"kafka": "error"})
+
+    return {"status": "ok", "dependencies": {"database": db_status, "kafka": "ok"}}
+
+--- File: services\transaction_service\app\schemas.py ---
+from datetime import datetime
+from pydantic import BaseModel, Field, ConfigDict
+from enum import Enum
+from typing import Optional, List # Import List
+
+# --- Core Domain Models ---
+# (TradeSide, TradeType, EventType, RawTrade remain unchanged from last update)
+
+class TradeSide(str, Enum):
+    BUY = "Buy"
+    SELL = "Sell"
+
+class TradeType(str, Enum):
+    EQUITY = "EQ"
+    FUTURES = "FUT"
+    OPTIONS_CALL = "CE"
+    OPTIONS_PUT = "PE"
+    CURRENCY = "CUR"
+    COMMODITY = "COM"
+
+class EventType(str, Enum):
+    DIVIDEND = "DIVIDEND"
+    SPLIT = "SPLIT"
+    BONUS = "BONUS"
+    RIGHTS = "RIGHTS"
+    MERGER = "MERGER"
+
+class RawTrade(BaseModel):
+    external_id: str
+    client_id: str
+    instrument_token: Optional[str] = None
+    side: Optional[TradeSide] = None
+    price: Optional[float] = None
+    quantity: Optional[float] = None
+    timestamp: datetime
+    executing_broker: str
+    version: Optional[str] = None
+    source: Optional[str] = None
+    exchange: Optional[str] = None
+    trade_type: Optional[TradeType] = None
+    event_type: Optional[EventType] = None
+
+# --- External API Models ---
+
+class FyersTradeWebhook(BaseModel):
+    id: str
+    clientId: str
+    symbol: str
+    side: int
+    tradedPrice: float
+    filledQty: int
+    orderDateTime: str
+    model_config = ConfigDict(extra='ignore')
+
+
+# --- Database & Messaging Models ---
+# (DBTransactionCreate, EnrichedTrade, DLEnvelope remain unchanged from last update)
+
+class DBTransactionCreate(BaseModel):
+    external_id: str
+    client_id: str
+    security_id: int
+    side: Optional[TradeSide] = None
+    price: Optional[float] = None
+    quantity: Optional[float] = None
+    timestamp: datetime
+    executing_broker: str
+    version: Optional[bytes] = None
+    source: Optional[str] = None
+    exchange: Optional[str] = None
+    trade_type: Optional[TradeType] = None
+    event_type: Optional[EventType] = None
+
+class EnrichedTrade(BaseModel):
+    transaction_id: int
+    external_id: str
+    client_id: str
+    security_id: int
+    side: Optional[TradeSide] = None
+    price: Optional[float] = None
+    quantity: Optional[float] = None
+    timestamp: datetime
+    executing_broker: str
+    source: Optional[str] = None
+    version: Optional[str] = None
+    created_at: datetime
+    exchange: Optional[str] = None
+    trade_type: Optional[TradeType] = None
+    event_type: Optional[EventType] = None
+
+class DLEnvelope(BaseModel):
+    error_message: str
+    error_service: str = "transaction_master_service"
+    failed_at: datetime
+    original_payload: RawTrade # Consider if this should hold Fyers payload on Fyers failure
+
+
+# --- Security Master Client Models (REVISED) ---
+
+class SecurityMasterDetail(BaseModel):
+    """Represents the object inside the 'data' list."""
+    id: int # This is the crucial security_id
+    company_name: Optional[str] = None
+    isin: Optional[str] = None
+    market_code1: Optional[str] = None
+    symbol1: Optional[str] = None
+    # Add any other fields you might need from the response later
+    # Be careful with types, some numbers are strings
+    face_value: Optional[str] = None
+    outstanding_shares: Optional[str] = None
+
+    # Allow extra fields we don't explicitly define
+    model_config = ConfigDict(extra='ignore')
+
+class SecurityMasterResponse(BaseModel):
+    """Represents the overall structure of the Security Master API response."""
+    count: int
+    data: List[SecurityMasterDetail] # It's a list containing detail objects
+    status: str # Expecting "success" or potentially an error status
+
+    # Allow extra fields we don't explicitly define
+    model_config = ConfigDict(extra='ignore')
+
+--- File: services\transaction_service\app\__init__.py ---
+
+
+--- Folder: services\transaction_service\app\api ---
+--- File: services\transaction_service\app\api\query.py ---
+import base64
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from typing import List, Optional
+
+from app.db.models import Transaction
+from app.db.session import get_db_session
+# Ensure Enums are imported if needed for type hints or explicit conversion
+from app.schemas import EnrichedTrade, TradeSide, TradeType, EventType
+
+router = APIRouter()
+
+@router.get("/transactions", response_model=List[EnrichedTrade])
+async def get_transactions(
+    # Add optional filters for new fields if desired
+    client_id: Optional[str] = Query(None, description="Filter by client ID"),
+    exchange: Optional[str] = Query(None, description="Filter by exchange"),
+    trade_type: Optional[TradeType] = Query(None, description="Filter by trade type"),
+    event_type: Optional[EventType] = Query(None, description="Filter by event type"),
+    skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """
+    Retrieves a list of historical transactions from the database,
+    including new fields like exchange, trade_type, and event_type.
+    """
+    # Start building the query
+    query = select(Transaction).order_by(Transaction.timestamp.desc())
+
+    # Apply filters if provided
+    if client_id:
+        query = query.where(Transaction.client_id == client_id)
+    if exchange:
+        query = query.where(Transaction.exchange == exchange)
+    if trade_type:
+        query = query.where(Transaction.trade_type == trade_type)
+    if event_type:
+        query = query.where(Transaction.event_type == event_type)
+
+    # Apply pagination
+    query = query.offset(skip).limit(limit)
+
+    # Execute the query
+    result = await session.execute(query)
+    transactions_from_db = result.scalars().all()
+
+    # --- Convert DB objects to Pydantic schema, including new fields ---
+    response_data = []
+    for trans in transactions_from_db:
+        # Handle potential None values before accessing .value for Enums
+        side_enum = TradeSide(trans.side.value) if trans.side else None
+        trade_type_enum = TradeType(trans.trade_type.value) if trans.trade_type else None
+        event_type_enum = EventType(trans.event_type.value) if trans.event_type else None
+        version_str = base64.b64encode(trans.version).decode('utf-8') if trans.version else None
+
+        response_data.append(
+            EnrichedTrade(
+                transaction_id=trans.id,
+                external_id=trans.external_id,
+                client_id=trans.client_id,
+                security_id=trans.security_id,
+                side=side_enum,          # Pass nullable enum
+                price=trans.price,       # Pass nullable float
+                quantity=trans.quantity, # Pass nullable float
+                timestamp=trans.timestamp,
+                executing_broker=trans.executing_broker,
+                source=trans.source,
+                version=version_str,
+                created_at=trans.created_at,
+                exchange=trans.exchange,          # NEW: Map exchange
+                trade_type=trade_type_enum,      # NEW: Map trade_type
+                event_type=event_type_enum       # NEW: Map event_type
+            )
+        )
+    return response_data
+
+--- File: services\transaction_service\app\api\webhook.py ---
+import logging
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, status
+from app.schemas import RawTrade, FyersTradeWebhook, TradeSide, TradeType
+from app.kafka.producer import KafkaProducer, get_kafka_producer
+from app.core.config import settings
+
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+def parse_fyers_symbol(symbol: str) -> tuple[str, TradeType | None]:
+    """
+    Parses a Fyers symbol string (e.g., 'NSE:SBIN-EQ', 'NSE:NIFTY25DECFUT')
+    into exchange and trade type.
+    Returns (exchange, trade_type) or (exchange, None) if type is unknown.
+    """
+    try:
+        parts = symbol.split(':')
+        if len(parts) != 2:
+            logger.warning(f"Could not parse exchange from symbol: {symbol}")
+            return "UNKNOWN", None # Or raise an error if exchange is mandatory
+
+        exchange = parts[0]
+        identifier = parts[1]
+
+        # Determine trade type based on common Fyers suffixes
+        if identifier.endswith("-EQ"):
+            trade_type = TradeType.EQUITY
+        elif identifier.endswith("FUT"):
+            trade_type = TradeType.FUTURES
+        elif identifier.endswith("CE"):
+            trade_type = TradeType.OPTIONS_CALL
+        elif identifier.endswith("PE"):
+            trade_type = TradeType.OPTIONS_PUT
+        # Add more specific checks if needed for CUR, COM etc.
+        # This might require more examples of Fyers symbols for those types.
+        else:
+            logger.warning(f"Could not determine trade type from symbol identifier: {identifier}")
+            trade_type = None # Mark as unknown if suffix doesn't match
+
+        return exchange, trade_type
+    except Exception as e:
+        logger.error(f"Error parsing symbol '{symbol}': {e}", exc_info=True)
+        return "ERROR", None
+
+
+@router.post("/trade", status_code=status.HTTP_202_ACCEPTED)
+async def accept_trade(
+    fyers_trade: FyersTradeWebhook,
+    producer: KafkaProducer = Depends(get_kafka_producer)
+):
+    """
+    Accepts a Fyers-specific trade payload, validates it, transforms it
+    to our internal format (including parsing symbol), and enqueues it to Kafka.
+    """
+    try:
+        # --- Transformation Logic ---
+        trade_side = TradeSide.BUY if fyers_trade.side == 1 else TradeSide.SELL
+        trade_timestamp = datetime.strptime(fyers_trade.orderDateTime, "%d-%b-%Y %H:%M:%S")
+
+        # NEW: Parse exchange and trade_type from the symbol
+        exchange, trade_type = parse_fyers_symbol(fyers_trade.symbol)
+
+        # Handle case where trade_type could not be determined
+        if trade_type is None:
+            # Decide strategy: error out, or proceed with None?
+            # For now, let's proceed but log clearly. Downstream needs to handle None.
+            logger.warning(f"Proceeding with unknown trade type for symbol: {fyers_trade.symbol}")
+
+        internal_trade = RawTrade(
+            external_id=fyers_trade.id,
+            client_id=fyers_trade.clientId,
+            instrument_token=fyers_trade.symbol, # Store original symbol
+            side=trade_side,
+            price=fyers_trade.tradedPrice,
+            quantity=fyers_trade.filledQty,
+            timestamp=trade_timestamp,
+            executing_broker="Fyers",
+            source="fyers_webhook",
+            exchange=exchange,          # Populate parsed exchange
+            trade_type=trade_type,      # Populate parsed trade type
+            event_type=None             # Fyers webhook sends trades, not events
+        )
+
+        logger.info(f"Received and transformed Fyers trade with external_id: {internal_trade.external_id}")
+
+        await producer.send(
+            topic=settings.KAFKA_INCOMING_TOPIC,
+            value=internal_trade.model_dump(mode="json")
+        )
+
+        return {"message": "Trade accepted for processing."}
+    except Exception as e:
+        logger.error(f"Failed to process Fyers trade: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not queue trade for processing. Please try again later."
+        )
+
+--- File: services\transaction_service\app\api\__init__.py ---
+
+
+--- Folder: services\transaction_service\app\clients ---
+--- File: services\transaction_service\app\clients\security_master_client.py ---
+import httpx
+import logging
+from typing import Optional
+
+from app.core.config import settings
+from app.schemas import SecurityMasterResponse, SecurityMasterDetail
+
+logger = logging.getLogger(__name__)
+
+def extract_base_symbol(instrument_token: str) -> str | None:
+    """Extracts base symbol (e.g., 'SBIN' from 'NSE:SBIN-EQ')."""
+    try:
+        if ':' in instrument_token:
+            base = instrument_token.split(':', 1)[1]
+        else:
+            base = instrument_token
+        if base.endswith(('-EQ', '-BE', '-SM', '-ST')):
+             return base.rsplit('-', 1)[0]
+        else:
+            return base # Assume FUT/OPT symbols etc. are used directly
+    except Exception as e:
+        logger.error(f"Error extracting base symbol from '{instrument_token}': {e}")
+        return None
+
+class SecurityMasterClient:
+    def __init__(self):
+        self.client = httpx.AsyncClient(
+            base_url=settings.SECURITY_MASTER_URL,
+            timeout=10.0
+        )
+        logger.info(f"Initialized SecurityMasterClient with base URL: {settings.SECURITY_MASTER_URL}")
+
+    async def get_security_id_from_token(self, instrument_token: str) -> int | None:
+        """
+        Calls the Security Master API using the extracted base symbol in the path
+        and returns ONLY the security ID (int) if successful, otherwise None.
+        """
+        lookup_symbol = extract_base_symbol(instrument_token)
+        if not lookup_symbol:
+            logger.error(f"Could not extract a usable symbol from instrument_token: {instrument_token}")
+            return None
+
+        # --- CORRECTED: Use Path Parameter ---
+        # Define the endpoint path using an f-string to include the symbol
+        # Adjust "/api/get/" if the base path is different
+        endpoint = f"/api/alfagrow/security/get/{lookup_symbol}"
+        # No query parameters needed
+        params = None
+        # ------------------------------------
+
+        try:
+            logger.debug(f"Calling Security Master: GET {endpoint} (original token: {instrument_token})")
+            # --- CORRECTED: Call GET with only the formatted endpoint string ---
+            response = await self.client.get(endpoint)
+            # -----------------------------------------------------------------
+
+            # Check for non-success status codes first
+            if not response.is_success:
+                # Specific handling for 404
+                if response.status_code == 404:
+                     logger.warning(f"Security Master returned 404 Not Found for symbol: {lookup_symbol} (token: {instrument_token})")
+                else:
+                     logger.error(f"Security Master returned non-success status {response.status_code} for symbol {lookup_symbol}. Response: {response.text}")
+                return None # Indicate lookup failure for any non-success status
+
+            # Parse the JSON response if successful
+            response_json = response.json()
+
+            # --- Parse the correct response structure ---
+            try:
+                validated_response = SecurityMasterResponse.model_validate(response_json)
+
+                if validated_response.status == "success" and validated_response.count > 0 and validated_response.data:
+                    security_id = validated_response.data[0].id
+                    logger.info(f"Successfully resolved {instrument_token} to security_id: {security_id}")
+                    return security_id
+                else:
+                    logger.warning(f"Security Master reported status '{validated_response.status}' or count={validated_response.count} for symbol: {lookup_symbol} (token: {instrument_token})")
+                    return None # Indicate lookup failure (found nothing)
+
+            except Exception as pydantic_error:
+                logger.error(f"Security Master response validation failed for symbol {lookup_symbol}: {pydantic_error}. Response: {response.text}")
+                return None # Indicate lookup failure (bad response format)
+
+        except httpx.TimeoutException:
+            logger.error(f"Timeout calling Security Master for symbol: {lookup_symbol}")
+            return None
+        except httpx.RequestError as e:
+            logger.error(f"Network error calling Security Master for symbol {lookup_symbol}: {e}")
+            return None
+
+# Singleton instance
+security_master_client = SecurityMasterClient()
+
+--- File: services\transaction_service\app\clients\__init__.py ---
+
+
+--- Folder: services\transaction_service\app\core ---
+--- File: services\transaction_service\app\core\config.py ---
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
+
+    # Kafka settings
+    KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
+    KAFKA_INCOMING_TOPIC: str = "transactions.incoming"
+    KAFKA_ENRICHED_TOPIC: str = "transactions.enriched"
+    KAFKA_DLQ_TOPIC: str = "transactions.dlq"
+    KAFKA_CONSUMER_GROUP: str = "transaction_service_group"
+
+    # Database settings
+    DB_URL: str = "postgresql+asyncpg://user:password@localhost:5432/transactions_db"
+    
+    SECURITY_MASTER_URL: str
+
+    # App settings
+    LOG_LEVEL: str = "INFO"
+    PROCESSOR_MAX_RETRIES: int = 3
+    
+settings = Settings()
+
+--- File: services\transaction_service\app\core\__init__.py ---
+
+
+--- Folder: services\transaction_service\app\db ---
+--- File: services\transaction_service\app\db\models.py ---
+from sqlalchemy import (
+    Column, Integer, String, Float, DateTime, Enum as SQLAlchemyEnum, LargeBinary,
+    UniqueConstraint, Index
+)
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.sql import func
+# Import the Enums from schemas to ensure consistency
+from app.schemas import TradeSide, TradeType, EventType
+
+Base = declarative_base()
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(String(255), unique=True, nullable=False, index=True)
+    client_id = Column(String(255), nullable=False, index=True)
+    # CHANGED: Made non-nullable as Security Master is live
+    security_id = Column(Integer, nullable=False, index=True)
+
+    # CHANGED: Made nullable to support non-trade events (e.g., dividends)
+    # The Enum name 'trade_side_enum' MUST remain the same unless you drop the type in PG
+    side = Column(SQLAlchemyEnum(TradeSide, name="trade_side_enum"), nullable=True)
+    # CHANGED: Made nullable to support events without a price (e.g., splits)
+    price = Column(Float, nullable=True)
+    # CHANGED: Made nullable (though less common, could support events affecting shares differently)
+    quantity = Column(Float, nullable=True)
+
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    executing_broker = Column(String(255), nullable=False)
+    source = Column(String(255))
+    version = Column(LargeBinary, nullable=True)
+
+    # --- NEW COLUMNS ---
+    # NEW: Added exchange, nullable=True allows for non-exchange events
+    exchange = Column(String(50), nullable=True, index=True)
+    # NEW: Added trade_type, nullable=True allows for non-trade events
+    # Ensure a unique name for the new Enum type in PostgreSQL
+    trade_type = Column(SQLAlchemyEnum(TradeType, name="trade_type_enum"), nullable=True, index=True)
+    # NEW: Added event_type, nullable=True as most transactions are not events
+    # Ensure a unique name for the new Enum type in PostgreSQL
+    event_type = Column(SQLAlchemyEnum(EventType, name="event_type_enum"), nullable=True, index=True)
+    # --- END NEW COLUMNS ---
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('external_id', name='uq_external_id'),
+        Index('ix_transactions_client_id', 'client_id'),
+        Index('ix_transactions_security_id', 'security_id'),
+        # Add indexes for new queryable fields
+        Index('ix_transactions_exchange', 'exchange'),
+        Index('ix_transactions_trade_type', 'trade_type'),
+        Index('ix_transactions_event_type', 'event_type'),
+    )
+
+--- File: services\transaction_service\app\db\session.py ---
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from app.core.config import settings
+
+# This line creates the async engine, which will manage connections to the database.
+# It uses the DB_URL from our settings file.
+engine = create_async_engine(settings.DB_URL, echo=False, future=True)
+
+# This creates a session "factory". We will call this to get a new database session
+# whenever we need to interact with the database (e.g., for an API request).
+AsyncSessionFactory = sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+async def get_db_session() -> AsyncSession:
+    """
+    Dependency provider for FastAPI to get a DB session.
+    """
+    async with AsyncSessionFactory() as session:
+        yield session
+
+--- File: services\transaction_service\app\db\__init__.py ---
+
+
+--- Folder: services\transaction_service\app\db\alembic ---
+--- File: services\transaction_service\app\db\alembic\env.py ---
+import os
+import sys
+from logging.config import fileConfig
+
+from sqlalchemy import engine_from_config
+from sqlalchemy.pool import NullPool
+
+from alembic import context
+
+# Make the 'app' directory available for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+
+from app.db.models import Base
+from app.core.config import settings
+
+config = context.config
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Overwrite the sqlalchemy.url from the alembic.ini with the one from our settings,
+# but make it synchronous for this script by removing '+asyncpg'
+sync_db_url = settings.DB_URL.replace("+asyncpg", "")
+config.set_main_option('sqlalchemy.url', sync_db_url)
+
+target_metadata = Base.metadata
+
+def run_migrations_offline() -> None:
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+def run_migrations_online() -> None:
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section), # This is the corrected line
+        prefix="sqlalchemy.",
+        poolclass=NullPool,
+    )
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection, target_metadata=target_metadata
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+
+--- File: services\transaction_service\app\db\alembic\README ---
+
+
+--- File: services\transaction_service\app\db\alembic\script.py.mako ---
+
+
+--- Folder: services\transaction_service\app\db\alembic\versions ---
+--- File: services\transaction_service\app\db\alembic\versions\a1b2c3d4e5f6_create_transactions_table.py ---
+"""create transactions table
+
+Revision ID: a1b2c3d4e5f6
+Revises: 
+Create Date: 2025-09-30 21:30:00.000000
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+
+# revision identifiers, used by Alembic.
+revision: str = 'a1b2c3d4e5f6'
+down_revision: Union[str, None] = None
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.create_table('transactions',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('external_id', sa.String(length=255), nullable=False),
+    sa.Column('client_id', sa.String(length=255), nullable=False),
+    sa.Column('security_id', sa.Integer(), nullable=True),
+    sa.Column('side', sa.Enum('BUY', 'SELL', name='trade_side_enum'), nullable=False),
+    sa.Column('price', sa.Float(), nullable=False),
+    sa.Column('quantity', sa.Float(), nullable=False),
+    sa.Column('timestamp', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('executing_broker', sa.String(length=255), nullable=False),
+    sa.Column('source', sa.String(length=255), nullable=True),
+    sa.Column('version', sa.LargeBinary(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('external_id', name='uq_external_id')
+    )
+    op.create_index(op.f('ix_transactions_client_id'), 'transactions', ['client_id'], unique=False)
+    op.create_index(op.f('ix_transactions_external_id'), 'transactions', ['external_id'], unique=True)
+    op.create_index(op.f('ix_transactions_id'), 'transactions', ['id'], unique=False)
+    op.create_index(op.f('ix_transactions_security_id'), 'transactions', ['security_id'], unique=False)
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index(op.f('ix_transactions_security_id'), table_name='transactions')
+    op.drop_index(op.f('ix_transactions_id'), table_name='transactions')
+    op.drop_index(op.f('ix_transactions_external_id'), table_name='transactions')
+    op.drop_index(op.f('ix_transactions_client_id'), table_name='transactions')
+    op.drop_table('transactions')
+    # Manually drop the ENUM type for PostgreSQL
+    op.execute("DROP TYPE trade_side_enum;")
+    # ### end Alembic commands ###
+
+--- File: services\transaction_service\app\db\alembic\versions\b5b52e151986_add_exchange_trade_type_event_type_and_.py ---
+"""Add exchange, trade_type, event_type and update nullability
+
+Revision ID: b5b52e151986
+Revises: a1b2c3d4e5f6
+Create Date: 2025-10-26 12:34:00.000000
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+# Import Enum types if needed for PostgreSQL ENUM creation
+from app.schemas import TradeType, EventType
+
+
+# revision identifiers, used by Alembic.
+revision: str = 'b5b52e151986'
+down_revision: Union[str, None] = 'a1b2c3d4e5f6' # Points to the previous migration
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    # ### commands auto generated by Alembic - manually verified ###
+
+    # Create new ENUM types first (required for PostgreSQL)
+    trade_type_enum = sa.Enum(TradeType, name='trade_type_enum')
+    trade_type_enum.create(op.get_bind(), checkfirst=False) # checkfirst=False avoids error if type exists
+
+    event_type_enum = sa.Enum(EventType, name='event_type_enum')
+    event_type_enum.create(op.get_bind(), checkfirst=False)
+
+    # Add new columns
+    op.add_column('transactions', sa.Column('exchange', sa.String(length=50), nullable=True))
+    op.add_column('transactions', sa.Column('trade_type', trade_type_enum, nullable=True))
+    op.add_column('transactions', sa.Column('event_type', event_type_enum, nullable=True))
+
+    # Alter nullability of existing columns
+    op.alter_column('transactions', 'security_id',
+               existing_type=sa.INTEGER(),
+               nullable=False) # Make non-nullable
+    op.alter_column('transactions', 'side',
+               existing_type=sa.VARCHAR(length=4), # Assuming length based on 'Buy'/'Sell'
+               type_=sa.Enum('BUY', 'SELL', name='trade_side_enum'), # Ensure type is correct ENUM
+               nullable=True, # Make nullable
+               existing_nullable=False)
+    op.alter_column('transactions', 'price',
+               existing_type=sa.DOUBLE_PRECISION(precision=53),
+               nullable=True) # Make nullable
+    op.alter_column('transactions', 'quantity',
+               existing_type=sa.DOUBLE_PRECISION(precision=53),
+               nullable=True) # Make nullable
+
+    # Create indexes for new columns
+    op.create_index(op.f('ix_transactions_event_type'), 'transactions', ['event_type'], unique=False)
+    op.create_index(op.f('ix_transactions_exchange'), 'transactions', ['exchange'], unique=False)
+    op.create_index(op.f('ix_transactions_trade_type'), 'transactions', ['trade_type'], unique=False)
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    # ### commands auto generated by Alembic - manually verified ###
+    op.drop_index(op.f('ix_transactions_trade_type'), table_name='transactions')
+    op.drop_index(op.f('ix_transactions_exchange'), table_name='transactions')
+    op.drop_index(op.f('ix_transactions_event_type'), table_name='transactions')
+
+    # Revert nullability changes
+    op.alter_column('transactions', 'quantity',
+               existing_type=sa.DOUBLE_PRECISION(precision=53),
+               nullable=False)
+    op.alter_column('transactions', 'price',
+               existing_type=sa.DOUBLE_PRECISION(precision=53),
+               nullable=False)
+    op.alter_column('transactions', 'side',
+               existing_type=sa.Enum('BUY', 'SELL', name='trade_side_enum'),
+               nullable=False,
+               existing_nullable=True)
+    op.alter_column('transactions', 'security_id',
+               existing_type=sa.INTEGER(),
+               nullable=True)
+
+    # Drop new columns
+    op.drop_column('transactions', 'event_type')
+    op.drop_column('transactions', 'trade_type')
+    op.drop_column('transactions', 'exchange')
+
+    # Drop the ENUM types (required for PostgreSQL)
+    sa.Enum(EventType, name='event_type_enum').drop(op.get_bind(), checkfirst=False)
+    sa.Enum(TradeType, name='trade_type_enum').drop(op.get_bind(), checkfirst=False)
+    # ### end Alembic commands ###
+
+--- Folder: services\transaction_service\app\kafka ---
+--- File: services\transaction_service\app\kafka\producer.py ---
+import json
+import logging
+from aiokafka import AIOKafkaProducer
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+class KafkaProducer:
+    def __init__(self):
+        # We no longer create the producer here. We just initialize it to None.
+        self.producer: AIOKafkaProducer | None = None
+        self._started = False
+
+    async def start(self):
+        if not self._started:
+            # We now create the AIOKafkaProducer here, inside an async function.
+            # This ensures an event loop is running.
+            self.producer = AIOKafkaProducer(
+                bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
+                value_serializer=lambda v: json.dumps(v, default=str).encode('utf-8')
+            )
+            await self.producer.start()
+            self._started = True
+            logger.info("Kafka producer started.")
+
+    async def stop(self):
+        if self._started and self.producer:
+            await self.producer.stop()
+            self._started = False
+            logger.info("Kafka producer stopped.")
+
+    async def send(self, topic: str, value: dict, headers: list[tuple[str, bytes]] | None = None):
+        if not self._started or not self.producer:
+            raise RuntimeError("KafkaProducer has not been started.")
+        try:
+            await self.producer.send_and_wait(topic, value=value, headers=headers)
+        except Exception as e:
+            logger.error(f"Failed to send message to topic {topic}: {e}")
+            raise
+
+# This line is now safe, because __init__ is a lightweight sync function.
+kafka_producer = KafkaProducer()
+
+async def get_kafka_producer() -> KafkaProducer:
+    """
+    Dependency provider for FastAPI to get the kafka producer.
+    """
+    return kafka_producer
+
+--- File: services\transaction_service\app\kafka\__init__.py ---
+
+
+--- Folder: services\transaction_service\app\services ---
+--- File: services\transaction_service\app\services\processor.py ---
+import asyncio
+import base64
+import json
+import logging
+from datetime import datetime, timezone
+
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select
+from pydantic import ValidationError
+# Tenacity is not used currently, but kept for potential future retry logic
+# from tenacity import retry, stop_after_attempt, wait_exponential
+
+from app.core.config import settings
+from app.db.models import Transaction
+from app.db.session import AsyncSessionFactory
+from app.schemas import RawTrade, DBTransactionCreate, EnrichedTrade, DLEnvelope, TradeSide, TradeType, EventType
+# Correctly import the real client
+from app.clients.security_master_client import security_master_client
+
+
+logger = logging.getLogger(__name__)
+
+class TransactionProcessor:
+    def __init__(self):
+        self.consumer = AIOKafkaConsumer(
+            settings.KAFKA_INCOMING_TOPIC,
+            bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
+            group_id=settings.KAFKA_CONSUMER_GROUP,
+            enable_auto_commit=False,
+            auto_offset_reset='earliest',
+            value_deserializer=lambda v: json.loads(v.decode('utf-8'))
+        )
+        self.producer = AIOKafkaProducer(
+            bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
+            value_serializer=lambda v: json.dumps(v, default=str).encode('utf-8')
+        )
+        self._running = False
+
+    async def start(self):
+        logger.info("Starting Transaction Processor...")
+        await self.consumer.start()
+        await self.producer.start()
+        self._running = True
+        asyncio.create_task(self.process_messages())
+
+    async def stop(self):
+        logger.info("Stopping Transaction Processor...")
+        self._running = False
+        # Gracefully stop consumer and producer
+        if self.consumer._running:
+             await self.consumer.stop()
+        if self.producer and self.producer._started: # Check if producer exists before checking _started
+             await self.producer.stop()
+        logger.info("Transaction Processor stopped.")
+
+    async def process_messages(self):
+        try:
+            async for msg in self.consumer:
+                if not self._running: break
+                logger.info(f"Processing message from offset {msg.offset} in partition {msg.partition}")
+                try:
+                    # Parse the message using RawTrade schema which now includes new fields
+                    raw_trade = RawTrade.model_validate(msg.value)
+                    await self.handle_message(raw_trade)
+                    # Only commit if handle_message succeeds
+                    await self.consumer.commit()
+                except ValidationError as e:
+                    logger.error(f"Validation error for incoming Kafka message: {e} - Payload: {msg.value}")
+                    # Log and commit offset to avoid blocking on bad messages
+                    await self.consumer.commit()
+                except Exception as e:
+                    # Catch errors from handle_message (enrichment, DB, publish, DLQ send)
+                    logger.error(f"Unhandled error processing message offset {msg.offset}: {e}. Message will NOT be committed.", exc_info=True)
+                    # DO NOT COMMIT offset here. Kafka consumer group will retry after timeout.
+                    # Consider adding specific handling for DLQ send failures if critical
+        finally:
+            logger.info("Message processing loop finished.")
+
+    async def handle_message(self, raw_trade: RawTrade):
+        """Processes a single RawTrade message. Raises exception on internal failure."""
+        security_id = None # Initialize security_id
+        try:
+            # --- Enrichment ---
+            if raw_trade.instrument_token:
+                # --- THIS IS THE CORRECTED METHOD CALL ---
+                security_id = await security_master_client.get_security_id_from_token(raw_trade.instrument_token)
+                # ----------------------------------------
+
+            # --- Fail Hard if Enrichment Fails ---
+            if security_id is None:
+                error_msg = f"Enrichment failed: Could not find security_id for instrument {raw_trade.instrument_token}"
+                logger.error(error_msg)
+                await self.send_to_dlq(error_msg, raw_trade)
+                return # Stop processing THIS message successfully (commit will happen in process_messages)
+
+            # --- Persistence ---
+            async with AsyncSessionFactory() as session:
+                transaction = await self.upsert_transaction(session, raw_trade, security_id)
+                await session.commit() # Commit DB transaction
+
+            # --- Publish Enriched Event ---
+            await self.publish_enriched_trade(transaction)
+
+        except Exception as e:
+             # Catch potential exceptions during DB or publish steps
+             logger.error(f"Internal error processing trade {raw_trade.external_id} after enrichment: {e}", exc_info=True)
+             # Attempt to send to DLQ after internal failure
+             await self.send_to_dlq(f"Internal processing error: {e}", raw_trade)
+             # Re-raise the exception to signal failure to process_messages loop
+             raise e
+
+    async def upsert_transaction(self, session: AsyncSession, trade: RawTrade, security_id: int) -> Transaction:
+        """Saves the transaction to the database idempotently."""
+        version_bytes = base64.b64decode(trade.version) if trade.version else None
+
+        db_payload = DBTransactionCreate(
+            external_id=trade.external_id,
+            client_id=trade.client_id,
+            security_id=security_id,
+            side=trade.side,
+            price=trade.price,
+            quantity=trade.quantity,
+            timestamp=trade.timestamp,
+            executing_broker=trade.executing_broker,
+            source=trade.source,
+            version=version_bytes,
+            exchange=trade.exchange,
+            trade_type=trade.trade_type,
+            event_type=trade.event_type
+        )
+
+        stmt = insert(Transaction).values(**db_payload.model_dump()).on_conflict_do_nothing(
+            index_elements=['external_id']
+        )
+        await session.execute(stmt)
+
+        result = await session.execute(select(Transaction).where(Transaction.external_id == trade.external_id))
+        db_record = result.scalar_one_or_none() # Use scalar_one_or_none for safety
+        if db_record is None:
+             # This should ideally not happen with upsert, but handle defensively
+             logger.error(f"Upsert failed to return a record for external_id: {trade.external_id}")
+             raise RuntimeError(f"Database upsert failed for external_id {trade.external_id}")
+        return db_record
+
+
+    async def publish_enriched_trade(self, transaction: Transaction):
+        """Publishes the final enriched trade message to Kafka."""
+        version_str = base64.b64encode(transaction.version).decode('utf-8') if transaction.version else None
+
+        # Handle enums safely
+        side_enum = TradeSide(transaction.side.value) if transaction.side else None
+        trade_type_enum = TradeType(transaction.trade_type.value) if transaction.trade_type else None
+        event_type_enum = EventType(transaction.event_type.value) if transaction.event_type else None
+
+        enriched_payload = EnrichedTrade(
+            transaction_id=transaction.id,
+            external_id=transaction.external_id,
+            client_id=transaction.client_id,
+            security_id=transaction.security_id,
+            side=side_enum,
+            price=transaction.price,
+            quantity=transaction.quantity,
+            timestamp=transaction.timestamp,
+            executing_broker=transaction.executing_broker,
+            source=transaction.source,
+            version=version_str,
+            created_at=transaction.created_at,
+            exchange=transaction.exchange,
+            trade_type=trade_type_enum,
+            event_type=event_type_enum
+        )
+        await self.producer.send(
+            settings.KAFKA_ENRICHED_TOPIC,
+            value=enriched_payload.model_dump(mode="json"),
+            headers=[("source_service", b"transaction_master")]
+        )
+        logger.info(f"Published enriched trade for external_id: {transaction.external_id}")
+
+    async def send_to_dlq(self, error_msg: str, payload: RawTrade):
+        """Sends a message envelope to the Dead-Letter Queue."""
+        dlq_envelope = DLEnvelope(
+            error_message=error_msg,
+            failed_at=datetime.now(timezone.utc),
+            original_payload=payload
+        )
+        try:
+            await self.producer.send(settings.KAFKA_DLQ_TOPIC, value=dlq_envelope.model_dump(mode="json"))
+            logger.info(f"Message for external_id {payload.external_id} sent to DLQ: {error_msg}")
+        except Exception as e:
+            # If sending to DLQ fails, log critically but don't crash the processor loop.
+            # The message offset won't be committed, allowing Kafka to retry later.
+            logger.critical(f"FATAL: Could not send message to DLQ for external_id {payload.external_id}: {e}", exc_info=True)
+            # Re-raise the exception to signal failure back to process_messages
+            raise e
+
+# Singleton instance
+transaction_processor = TransactionProcessor()
+
+--- File: services\transaction_service\app\services\security_master_mock.py ---
+import logging
+from app.schemas import SecurityMasterResponse, SecurityMasterData
+
+logger = logging.getLogger(__name__)
+
+# Updated mock DB to reflect the new, richer data structure
+MOCK_SECURITY_DB = {
+    "INFY": {
+        "id": 123,
+        "nse_symbol": "INFY",
+        "company_name": "Infosys Limited",
+    },
+    "RELIANCE-EQ": {
+        "id": 2002,
+        "nse_symbol": "RELIANCE",
+        "company_name": "Reliance Industries Ltd",
+    },
+    "TCS-EQ": {
+        "id": 3003,
+        "nse_symbol": "TCS",
+        "company_name": "Tata Consultancy Services Ltd",
+    }
+}
+
+class SecurityMasterClient:
+    async def get_security_details(self, instrument_token: str) -> dict:
+        """
+        Simulates calling the real Security Master API.
+        Returns a dictionary matching the API response structure.
+        """
+        security_info = MOCK_SECURITY_DB.get(instrument_token)
+
+        if security_info:
+            # Simulate a successful 200 OK response
+            response_data = SecurityMasterData(**security_info)
+            response = SecurityMasterResponse(success=True, data=response_data)
+        else:
+            # Simulate a 404 Not Found error response
+            # In a real HTTP client, we'd return a dictionary representing the error JSON.
+            # For the mock, we will just use the success=False flag.
+            response = SecurityMasterResponse(success=False, data=None)
+            logger.warning(f"Security not found for instrument_token: {instrument_token}")
+
+        # Return the Pydantic model as a dictionary
+        return response.model_dump()
+
+
+# Singleton instance
+security_master_client = SecurityMasterClient()
+
+--- File: services\transaction_service\app\services\__init__.py ---
+
+
+--- Folder: services\transaction_service\app\tests ---
+--- File: services\transaction_service\app\tests\conftest.py ---
+import pytest
+import pytest_asyncio
+from unittest.mock import AsyncMock, MagicMock
+from app.kafka.producer import KafkaProducer
+
+@pytest_asyncio.fixture
+async def mock_kafka_producer():
+    producer = MagicMock(spec=KafkaProducer)
+    producer.send = AsyncMock()
+    return producer
+
+--- File: services\transaction_service\app\tests\__init__.py ---
+
+
+--- Folder: services\transaction_service\app\tests\unit ---
+--- File: services\transaction_service\app\tests\unit\test_query.py ---
+import pytest
+from httpx import AsyncClient
+from fastapi import FastAPI
+from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime, timezone
+
+# Import what we need to test and mock
+from app.api.query import router as query_router
+from app.db.session import get_db_session
+from app.db.models import Transaction
+from app.schemas import TradeSide
+
+# 1. Create a sample Transaction object, just like one from a real database
+fake_transaction = Transaction(
+    id=1,
+    external_id="test_query_001",
+    client_id="client_abc",
+    security_id=1001,
+    side=TradeSide.BUY,
+    price=150.0,
+    quantity=10.0,
+    timestamp=datetime.now(timezone.utc),
+    executing_broker="TestBroker",
+    source="test_source",
+    version=b'v1',
+    created_at=datetime.now(timezone.utc)
+)
+
+# 2. Create a fake database session
+@pytest.fixture
+def mock_db_session():
+    # Create a mock for the async session
+    session = AsyncMock()
+    
+    # Mock the execute method to return a result
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [fake_transaction]
+    session.execute.return_value = mock_result
+    
+    # This makes the session usable in an 'async with' block
+    async def get_session():
+        yield session
+        
+    return get_session
+
+# 3. Create our test application, but override the real DB with our fake one
+@pytest.fixture
+def test_app_with_db(mock_db_session):
+    app = FastAPI()
+    app.include_router(query_router)
+    app.dependency_overrides[get_db_session] = mock_db_session
+    return app
+
+
+# 4. The actual test
+@pytest.mark.asyncio
+async def test_get_transactions_success(test_app_with_db):
+    async with AsyncClient(app=test_app_with_db, base_url="http://test") as ac:
+        response = await ac.get("/transactions")
+
+    # Assert that the API call was successful
+    assert response.status_code == 200
+    
+    # Assert that the response contains one record
+    response_data = response.json()
+    assert len(response_data) == 1
+    
+    # Assert that the data in the response matches our fake data
+    assert response_data[0]["external_id"] == "test_query_001"
+    assert response_data[0]["security_id"] == 1001
+
+--- File: services\transaction_service\app\tests\unit\test_webhook.py ---
+import pytest
+from httpx import AsyncClient
+from fastapi import FastAPI
+from app.api.webhook import router as webhook_router
+from app.kafka.producer import get_kafka_producer
+
+@pytest.fixture
+def test_app(mock_kafka_producer):
+    app = FastAPI()
+    app.include_router(webhook_router)
+    app.dependency_overrides[get_kafka_producer] = lambda: mock_kafka_producer
+    return app
+
+@pytest.mark.asyncio
+async def test_accept_trade_success(test_app, mock_kafka_producer):
+    payload = {
+        "external_id": "trade_123", "client_id": "client_abc",
+        "instrument_token": "INFY", "side": "Buy",
+        "price": 18500.50, "quantity": 50,
+        "timestamp": "2025-09-30T10:00:00Z",
+        "executing_broker": "Fyers", "source": "fyers_webhook"
+    }
+    async with AsyncClient(app=test_app, base_url="http://test") as ac:
+        response = await ac.post("/trade", json=payload)
+
+    assert response.status_code == 202
+    assert response.json() == {"message": "Trade accepted for processing."}
+    mock_kafka_producer.send.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_accept_trade_validation_error(test_app):
+    payload = { "external_id": "trade_123" } # Incomplete payload
+    async with AsyncClient(app=test_app, base_url="http://test") as ac:
+        response = await ac.post("/trade", json=payload)
+    assert response.status_code == 422
+
+--- File: services\transaction_service\app\tests\unit\__init__.py ---
+
+
+--- Folder: services\transaction_service\app\utils ---
+--- File: services\transaction_service\app\utils\logging.py ---
+import logging
+from pythonjsonlogger import jsonlogger
+from app.core.config import settings
+
+def setup_logging():
+    """Sets up structured JSON logging."""
+    log_handler = logging.StreamHandler()
+    formatter = jsonlogger.JsonFormatter(
+        '%(asctime)s %(name)s %(levelname)s %(message)s'
+    )
+    log_handler.setFormatter(formatter)
+    
+    root_logger = logging.getLogger()
+    # Clear any existing handlers to avoid duplicate logs
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+        
+    root_logger.addHandler(log_handler)
+    root_logger.setLevel(settings.LOG_LEVEL.upper())
+
+    # Suppress verbose logs from third-party libraries
+    logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("aiokafka").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
+--- File: services\transaction_service\app\utils\__init__.py ---
+
+
+--- Folder: services\transaction_service\scripts ---
+--- File: services\transaction_service\scripts\create_topics.py ---
+import asyncio
+import logging
+from aiokafka.admin import AIOKafkaAdminClient, NewTopic
+from aiokafka.errors import TopicAlreadyExistsError
+# Note: This import will fail on your local machine, but it will work inside the Docker container
+# because of how we will structure the 'app' directory later.
+from app.core.config import settings
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+async def create_topics():
+    """Creates the necessary Kafka topics idempotently."""
+    # A simple retry loop for initial connection
+    for attempt in range(5):
+        try:
+            admin_client = AIOKafkaAdminClient(
+                bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS
+            )
+            await admin_client.start()
+            logger.info("Successfully connected to Kafka.")
+            break
+        except Exception as e:
+            if attempt == 4:
+                logger.error(f"Failed to connect to Kafka after 5 attempts: {e}")
+                raise
+            logger.warning(f"Kafka not ready yet, retrying in 5 seconds... ({e})")
+            await asyncio.sleep(5)
+    
+    topics = [
+        NewTopic(name=settings.KAFKA_INCOMING_TOPIC, num_partitions=3, replication_factor=1),
+        NewTopic(name=settings.KAFKA_ENRICHED_TOPIC, num_partitions=3, replication_factor=1),
+        NewTopic(name=settings.KAFKA_DLQ_TOPIC, num_partitions=1, replication_factor=1),
+    ]
+    
+    try:
+        for topic in topics:
+            try:
+                await admin_client.create_topics([topic])
+                logger.info(f"Topic '{topic.name}' created successfully.")
+            except TopicAlreadyExistsError:
+                logger.warning(f"Topic '{topic.name}' already exists.")
+            except Exception as e:
+                logger.error(f"Failed to create topic '{topic.name}': {e}")
+                raise
+    finally:
+        await admin_client.close()
+
+if __name__ == "__main__":
+    logger.info("Attempting to create Kafka topics...")
+    # This script will eventually run from the app's startup command in docker-compose.yml
+    # To run it manually inside the container for testing:
+    # docker-compose run --rm transaction_service python /app/scripts/create_topics.py
+    try:
+        asyncio.run(create_topics())
+        logger.info("Topic creation process finished.")
+    except Exception as e:
+        logger.critical(f"Could not run topic creation: {e}")
+
+--- File: services\transaction_service\scripts\run_migrations.sh ---
+#!/bin/bash
+
+# This script runs inside the container, so it uses poetry run
+
+# Exit immediately if a command exits with a non-zero status.
+set -e
+
+echo "Running database migrations..."
+poetry run alembic upgrade head
+echo "Migrations applied successfully."
+
+--- File: services\transaction_service\scripts\smoke_test.py ---
+import asyncio
+import json
+import uuid
+from datetime import datetime, timezone
+import httpx
+from aiokafka import AIOKafkaConsumer
+
+# Configuration
+API_URL = "http://transaction_service:8000/webhook/trade"
+# In docker-compose, our service is on the same network as 'kafka'.
+# The internal listener is on port 29092.
+KAFKA_INTERNAL_BOOTSTRAP_SERVERS = "kafka:29092"
+ENRICHED_TOPIC = "transactions.enriched"
+CONSUMER_TIMEOUT_S = 10
+
+async def main():
+    external_id = f"smoke_test_{uuid.uuid4()}"
+    trade_payload = {
+        "external_id": external_id,
+        "client_id": "smoke_test_client",
+        "instrument_token": "TCS-EQ",
+        "side": "Buy",
+        "price": 3500.0,
+        "quantity": 25,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "executing_broker": "Fyers",
+        "version": "MQ==", # "1" in base64
+        "source": "smoke_test_script"
+    }
+
+    # 1. Send trade to webhook
+    # The script runs inside the service container, so it can call the API directly.
+    print(f"Sending trade with external_id: {external_id} to {API_URL}")
+    async with httpx.AsyncClient() as client:
+        response = await client.post(API_URL, json=trade_payload)
+        response.raise_for_status()
+        print(f"Webhook response: {response.status_code}")
+
+    # 2. Consume from enriched topic to verify
+    print(f"Waiting for message on topic '{ENRICHED_TOPIC}'...")
+    consumer = AIOKafkaConsumer(
+        ENRICHED_TOPIC,
+        bootstrap_servers=KAFKA_INTERNAL_BOOTSTRAP_SERVERS,
+        group_id=f"smoke_test_consumer_{uuid.uuid4()}", # Unique group to read from beginning
+        auto_offset_reset='earliest',
+        consumer_timeout_ms=CONSUMER_TIMEOUT_S * 1000,
+    )
+    await consumer.start()
+
+    found_message = False
+    try:
+        async for msg in consumer:
+            data = json.loads(msg.value.decode('utf-8'))
+            if data.get("external_id") == external_id:
+                print("\n--- Smoke Test SUCCESS ---")
+                print("Found matching enriched message:")
+                print(json.dumps(data, indent=2))
+                assert data['security_id'] == 3003 # Check for correct enrichment
+                assert data['transaction_id'] is not None
+                found_message = True
+                break
+    finally:
+        await consumer.stop()
+
+    if not found_message:
+        print(f"\n--- Smoke Test FAILED ---")
+        print(f"Did not find message with external_id '{external_id}' within {CONSUMER_TIMEOUT_S} seconds.")
+        exit(1)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+--- File: services\transaction_service\scripts\wait_for_service.py ---
+import socket
+import time
+import sys
+
+# A simple script to wait for a network service to become available.
+
+if len(sys.argv) != 3:
+    print("Usage: python wait_for_service.py <host> <port>")
+    sys.exit(1)
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+retries = 30 # Try for 60 seconds
+
+print(f"Waiting for {host}:{port} to become available...")
+
+for i in range(retries):
+    try:
+        # Try to create a connection
+        with socket.create_connection((host, port), timeout=5):
+            print(f"{host}:{port} is available! Proceeding.")
+            sys.exit(0) # Exit with success code
+    except (socket.timeout, ConnectionRefusedError, socket.gaierror, OSError) as e:
+        print(f"Attempt {i+1}/{retries}: {host}:{port} not ready yet ({e}), retrying in 2 seconds...")
+        time.sleep(2)
+
+print(f"Error: Service {host}:{port} did not become available after {retries * 2} seconds.")
+sys.exit(1) # Exit with failure code
+

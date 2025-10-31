@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.3.0
@@ -48,6 +46,9 @@ services:
       context: ./services/transaction_service
       dockerfile: Dockerfile
     container_name: transaction_service
+    dns: # <-- 2 spaces
+      - 8.8.8.8 # <-- 4 spaces
+      - 8.8.4.4 # <-- 4 spaces
     networks:
       - transaction-net
     depends_on:

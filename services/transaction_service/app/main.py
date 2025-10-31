@@ -7,15 +7,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aiokafka.errors import KafkaConnectionError
 from prometheus_fastapi_instrumentator import Instrumentator
 
-# NOTE: These imports will cause errors if you run the app now,
-# because we haven't created these files yet. We will create them next.
+# --- IMPORT ALL ROUTERS ---
 from app.api import webhook
+from app.api import query as query_api
+from app.api import internal as internal_api  # <--- IMPORT THE NEW ROUTER
+# ---------------------------
+
 from app.core.config import settings
 from app.db.session import get_db_session, engine
 from app.kafka.producer import kafka_producer
 from app.services.processor import transaction_processor
 from app.utils.logging import setup_logging
-from app.api import query as query_api
+
 
 # Setup logging first
 setup_logging()
@@ -45,8 +48,12 @@ app = FastAPI(
 # Instrument for Prometheus metrics
 Instrumentator().instrument(app).expose(app)
 
-app.include_router(webhook.router, prefix="/webhook", tags=["Webhook"])
+# --- INCLUDE ALL ROUTERS ---
+app.include_router(webhook.router, prefix="/webhook", tags=["Webhook (External)"])
 app.include_router(query_api.router, prefix="/query", tags=["Query"])
+app.include_router(internal_api.router, prefix="/internal", tags=["Internal"]) # <--- ADD THIS LINE
+# ---------------------------
+
 
 @app.get("/health", tags=["Health"])
 async def health_check(session: AsyncSession = Depends(get_db_session)):

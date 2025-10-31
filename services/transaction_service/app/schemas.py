@@ -1,10 +1,9 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
-from typing import Optional, List # Import List
+from typing import Optional, List
 
 # --- Core Domain Models ---
-# (TradeSide, TradeType, EventType, RawTrade remain unchanged from last update)
 
 class TradeSide(str, Enum):
     BUY = "Buy"
@@ -26,6 +25,11 @@ class EventType(str, Enum):
     MERGER = "MERGER"
 
 class RawTrade(BaseModel):
+    """
+    The standardized internal representation of any incoming event or trade,
+    before it is fully processed and saved. This is what goes into the
+    KAFKA_INCOMING_TOPIC.
+    """
     external_id: str
     client_id: str
     instrument_token: Optional[str] = None
@@ -40,9 +44,11 @@ class RawTrade(BaseModel):
     trade_type: Optional[TradeType] = None
     event_type: Optional[EventType] = None
 
+
 # --- External API Models ---
 
 class FyersTradeWebhook(BaseModel):
+    """Payload from the external Fyers trade webhook."""
     id: str
     clientId: str
     symbol: str
@@ -53,8 +59,23 @@ class FyersTradeWebhook(BaseModel):
     model_config = ConfigDict(extra='ignore')
 
 
+class InternalEventPayload(BaseModel):
+    """
+    Payload expected from the internal Event Master service.
+    """
+    event_id: str                   # The unique ID from the event system (for idempotency)
+    client_id: str                  # The client this event applies to
+    instrument_token: str           # The security this event applies to
+    event_type: EventType           # e.g., "DIVIDEND", "SPLIT"
+    timestamp: datetime             # When the event occurred or is effective
+    price: Optional[float] = None     # e.g., cash amount for a dividend
+    quantity: Optional[float] = None  # e.g., new shares for a split/bonus
+    source: str = "event_master"
+    
+    model_config = ConfigDict(extra='ignore')
+
+
 # --- Database & Messaging Models ---
-# (DBTransactionCreate, EnrichedTrade, DLEnvelope remain unchanged from last update)
 
 class DBTransactionCreate(BaseModel):
     external_id: str
@@ -72,6 +93,10 @@ class DBTransactionCreate(BaseModel):
     event_type: Optional[EventType] = None
 
 class EnrichedTrade(BaseModel):
+    """
+    The final, enriched data model. This is what is saved to the DB
+    (via DBTransactionCreate) and published to KAFKA_ENRICHED_TOPIC.
+    """
     transaction_id: int
     external_id: str
     client_id: str

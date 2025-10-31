@@ -63,6 +63,7 @@ class TransactionProcessor:
                 try:
                     # Parse the message using RawTrade schema which now includes new fields
                     raw_trade = RawTrade.model_validate(msg.value)
+                    print(raw_trade)
                     await self.handle_message(raw_trade)
                     # Only commit if handle_message succeeds
                     await self.consumer.commit()
